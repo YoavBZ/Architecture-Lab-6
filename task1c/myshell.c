@@ -15,12 +15,16 @@ void check_exit(int retval)
     }
 }
 
-void sig_handler(int sig)
-{
-    if (SIGTTIN == sig || SIGTTOU == sig || SIGTSTP == sig)
-    {
-        printf("Signal %s was ignored\n", strsignal(sig));
-    }
+void sig_handler(int sig){
+    printf("Signal %s was ignored\n", strsignal(sig));
+}
+
+void init_handlers(){
+    signal(SIGQUIT, sig_handler);
+    signal(SIGCHLD, sig_handler);
+    signal(SIGTTIN , SIG_IGN);
+    signal(SIGTTOU , SIG_IGN);
+    signal(SIGTSTP , SIG_IGN);
 }
 
 void set_default_handlers(){
@@ -30,8 +34,7 @@ void set_default_handlers(){
 
 void execute(cmd_line *line, int *left_pipe, job *current_job){
     int right_pipe[2];
-    if (NULL != line->next)
-    {
+    if (NULL != line->next){
         check_exit(pipe(right_pipe));
     }
     int pid = fork();
@@ -49,25 +52,21 @@ void execute(cmd_line *line, int *left_pipe, job *current_job){
         }
 
         // Pipe handling
-        if (NULL != line->next)
-        {
+        if (NULL != line->next){
             check_exit(fclose(stdout));
             check_exit(dup(right_pipe[1]));
             check_exit(close(right_pipe[1]));
         }
-        if (NULL != left_pipe)
-        {
+        if (NULL != left_pipe){
             check_exit(fclose(stdin));
             check_exit(dup(left_pipe[0]));
             check_exit(close(left_pipe[0]));
         }
 
         // IO redirection
-        if (NULL != line->input_redirect)
-        {
+        if (NULL != line->input_redirect){
             check_exit(fclose(stdin));
-            if (NULL == fopen(line->input_redirect, "r"))
-            {
+            if (NULL == fopen(line->input_redirect, "r")){
                 check_exit(-1);
             }
         }
@@ -84,9 +83,13 @@ void execute(cmd_line *line, int *left_pipe, job *current_job){
 
         if (NULL == left_pipe){
             // This is the first forking!
-            setpgid(getpid() , pid);
+            setpgid(pid , pid);
             current_job->pgid = pid;
+        } else {
+            // Not the first forking
+            setpgid(pid, current_job->pgid);
         }
+        
         if (NULL != line->next){
             check_exit(close(right_pipe[1]));
         }
@@ -121,8 +124,7 @@ void check_command(cmd_line *line, job **job_list){
 
 int main(int argc, char **argv)
 {
-    signal(SIGQUIT, sig_handler);
-    signal(SIGCHLD, sig_handler);
+    init_handlers();
     setpgid(getpid(), getpid());
     struct termios *attrs = malloc(sizeof(struct termios));
     check_exit(tcgetattr(STDIN_FILENO, attrs));

@@ -167,7 +167,7 @@ void update_job_list(job **job_list, int remove_done_jobs){
 * SIGCONT signal to wake it up before we block.  Run update_job_list to print DONE jobs.
 **/
 
-void run_job_in_foreground (job** job_list, job *j, int cont, struct termios* shell_tmodes, pid_t shell_pgid){
+void run_job_in_foreground(job** job_list, job *j, int cont, struct termios* shell_tmodes, pid_t shell_pgid){
 	int retval = waitpid(-j->pgid, 0, WNOHANG);
 	if (-1 == retval){
 		printf("[%d]\t %s \t\t %s", j->idx, status_to_str(j->status), j->cmd); 
@@ -176,7 +176,7 @@ void run_job_in_foreground (job** job_list, job *j, int cont, struct termios* sh
 		}
 		remove_job(job_list, j);
 	} else if (0 == retval){
-		tcsetpgrp (STDIN_FILENO, j->pgid);
+		tcsetpgrp(STDIN_FILENO, j->pgid);
 	}
 	if (cont && SUSPENDED == j->status){
 		tcsetattr(STDIN_FILENO, TCSADRAIN, j->tmodes);
@@ -192,6 +192,10 @@ void run_job_in_foreground (job** job_list, job *j, int cont, struct termios* sh
 			j->status = DONE;
 		}
 	}
+	tcsetpgrp(STDIN_FILENO, shell_pgid);
+	tcgetattr(STDIN_FILENO, j->tmodes);
+	tcsetattr(STDIN_FILENO, TCSADRAIN, shell_tmodes);
+	update_job_list(job_list, FALSE);
 }
 
 /** 

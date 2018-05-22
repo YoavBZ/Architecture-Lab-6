@@ -6,21 +6,23 @@
 #include "line_parser.h"
 #include "job_control.h"
 
-void check_exit(int retval)
-{
-    if (0 > retval)
-    {
+void check_exit(int retval){
+    if (0 > retval){
         perror("Error: ");
         _exit(-1);
     }
 }
 
-void sig_handler(int sig)
-{
-    if (SIGTTIN == sig || SIGTTOU == sig || SIGTSTP == sig)
-    {
-        printf("Signal %s was ignored\n", strsignal(sig));
-    }
+void sig_handler(int sig){
+    printf("Signal '%s' was ignored\n", strsignal(sig));
+}
+
+void init_handlers(){
+    signal(SIGQUIT, sig_handler);
+    signal(SIGCHLD, sig_handler);
+    signal(SIGTTIN , SIG_IGN);
+    signal(SIGTTOU , SIG_IGN);
+    signal(SIGTSTP , SIG_IGN);
 }
 
 void set_default_handlers(){
@@ -28,10 +30,9 @@ void set_default_handlers(){
     signal(SIGCHLD, SIG_DFL);
 }
 
-void execute(cmd_line *line, int *left_pipe, job *current_job){
+void execute(cmd_line *line, int *left_pipe, job *current_job, job ** job_list, struct termios *shell_tmodes){
     int right_pipe[2];
-    if (NULL != line->next)
-    {
+    if (NULL != line->next){
         check_exit(pipe(right_pipe));
     }
     int pid = fork();
@@ -49,25 +50,21 @@ void execute(cmd_line *line, int *left_pipe, job *current_job){
         }
 
         // Pipe handling
-        if (NULL != line->next)
-        {
+        if (NULL != line->next){
             check_exit(fclose(stdout));
             check_exit(dup(right_pipe[1]));
             check_exit(close(right_pipe[1]));
         }
-        if (NULL != left_pipe)
-        {
+        if (NULL != left_pipe){
             check_exit(fclose(stdin));
             check_exit(dup(left_pipe[0]));
             check_exit(close(left_pipe[0]));
         }
 
         // IO redirection
-        if (NULL != line->input_redirect)
-        {
+        if (NULL != line->input_redirect){
             check_exit(fclose(stdin));
-            if (NULL == fopen(line->input_redirect, "r"))
-            {
+            if (NULL == fopen(line->input_redirect, "r")){
                 check_exit(-1);
             }
         }
@@ -84,9 +81,13 @@ void execute(cmd_line *line, int *left_pipe, job *current_job){
 
         if (NULL == left_pipe){
             // This is the first forking!
-            setpgid(getpid() , pid);
+            setpgid(pid , pid);
             current_job->pgid = pid;
+        } else {
+            // Not the first forking
+            setpgid(pid, current_job->pgid);
         }
+
         if (NULL != line->next){
             check_exit(close(right_pipe[1]));
         }
@@ -96,11 +97,11 @@ void execute(cmd_line *line, int *left_pipe, job *current_job){
         // Checking for recursive calls
         if (NULL != line->next){
             // Checking whether to create a pipe for the next command
-            execute(line->next, right_pipe, current_job);
+            execute(line->next, right_pipe, current_job, 0, shell_tmodes, getpgid(getpid()));
         }
         else if (line->blocking){
             // Waiting for the whole group
-            while (-1 != waitpid(-current_job->pgid, 0, WNOHANG));
+            run_job_in_foreground(job_list, current_job, 0, shell_tmodes, getpgid(getpid()));
         }
     }
     else{
@@ -109,9 +110,11 @@ void execute(cmd_line *line, int *left_pipe, job *current_job){
     }
 }
 
-void check_command(cmd_line *line, job **job_list){
+void check_command(cmd_line *line, job **job_list, struct termios * shell_tmodes){
     if (0 == strcmp("jobs", line->arguments[0])){
         print_jobs(job_list);
+    } else if (0 == strcmp("fg", line->arguments[0])){
+        run_job_in_foreground(job_list, find_job_by_index(*job_list, atoi(line->arguments[1])), 0, shell_tmodes, getpgid(getpid()));
     }
     else if (0 == strcmp("quit", line->arguments[0])){
         free_job_list(job_list);
@@ -121,11 +124,10 @@ void check_command(cmd_line *line, job **job_list){
 
 int main(int argc, char **argv)
 {
-    signal(SIGQUIT, sig_handler);
-    signal(SIGCHLD, sig_handler);
+    init_handlers();
     setpgid(getpid(), getpid());
-    struct termios *attrs = malloc(sizeof(struct termios));
-    check_exit(tcgetattr(STDIN_FILENO, attrs));
+    struct termios *shell_tmodes = malloc(sizeof(struct termios));
+    check_exit(tcgetattr(STDIN_FILENO, shell_tmodes));
     job *job_list;
     while (1)
     {
@@ -133,31 +135,27 @@ int main(int argc, char **argv)
         char str[2048];
         char cwd[PATH_MAX];
 
-        if (NULL == getcwd(cwd, PATH_MAX))
-        {
+        if (NULL == getcwd(cwd, PATH_MAX)){
             perror("Error in getcwd(): ");
             return -1; // Abnormal exit
         }
         printf("%s$: ", cwd);
 
-        if (NULL == fgets(str, 2048, stdin))
-        {
+        if (NULL == fgets(str, 2048, stdin)){
             perror("Error in fgets(): ");
             return -1;
         }
 
         cmd_line *line = parse_cmd_lines(str);
-        if (NULL == line)
-        {
+        if (NULL == line){
             continue;
         }
 
-        check_command(line, &job_list);
-        job *current_job = add_job(&job_list, str);
-        current_job->status = RUNNING;
-        if (0 != strcmp("jobs", line->arguments[0]))
-        {
-            execute(line, NULL, current_job);
+        check_command(line, &job_list, shell_tmodes);
+        if (0 != strcmp("jobs", line->arguments[0])){
+            job *current_job = add_job(&job_list, str);
+            current_job->status = RUNNING;
+            execute(line, NULL, current_job, job_list, shell_tmodes);
         }
         free_cmd_lines(line);
     }
